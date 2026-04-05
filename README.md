@@ -1,6 +1,6 @@
-# To-Do List (Nuxt 3 + Axios + MSW + TypeScript)
+# To-Do List (Nuxt 3 + Axios + TypeScript)
 
-Мини-приложение «Список задач» с авторизацией, CRUD, фильтрами, поиском с debounce, пагинацией и ролями (admin / user). В режиме разработки REST API эмулируется через **MSW (Mock Service Worker)**.
+Fullstack мини-приложение «Список задач» с авторизацией, CRUD, фильтрами, поиском с debounce, пагинацией и ролями (admin / user). REST API реализован как **Nuxt Server API** (серверные маршруты в `server/api/`) с JWT-авторизацией и хранением данных в **SQLite**.
 
 ## Требования
 
@@ -19,6 +19,8 @@ npm run dev
 
 Приложение: `http://localhost:3000` (порт подставит Nuxt при занятости).
 
+При первом запуске автоматически создаётся файл `data.db` (SQLite) с таблицами `users` и `tasks`. Тестовые пользователи добавляются при пустой таблице `users`.
+
 Сборка production:
 
 ```bash
@@ -26,22 +28,38 @@ npm run build
 node .output/server/index.mjs
 ```
 
-MSW подключается **только в dev** (`import.meta.env.PROD` — worker не стартует). В production ожидается реальный бэкенд с тем же контрактом API.
+### Переменные окружения (опционально)
+
+| Переменная   | По умолчанию                        | Описание                  |
+|-------------|--------------------------------------|---------------------------|
+| `JWT_SECRET` | `dev-secret-change-in-production`   | Секрет для подписи JWT    |
 
 ## Стек
 
-| Компонент   | Версия / пакет        |
-|------------|------------------------|
-| Nuxt       | 3.x                    |
-| Vue        | 3                      |
-| TypeScript | да                     |
-| HTTP       | Axios (`$api`)        |
-| Стили      | Tailwind CSS           |
-| Моки API   | MSW 2.x, worker в `src/public/` |
+| Компонент   | Версия / пакет                       |
+|------------|---------------------------------------|
+| Nuxt       | 3.x                                  |
+| Vue        | 3                                     |
+| TypeScript | да                                    |
+| HTTP       | Axios (`$api`)                       |
+| Стили      | Tailwind CSS                          |
+| Server API | Nuxt Server Routes (`server/api/`)   |
+| БД         | SQLite (`better-sqlite3`)            |
+| JWT        | HMAC-SHA256 (Node.js `crypto`)       |
 
 ## Структура
 
 ```
+server/
+  api/
+    auth/login.post.ts        ← POST /api/auth/login
+    tasks/index.get.ts         ← GET  /api/tasks
+    tasks/index.post.ts        ← POST /api/tasks
+    tasks/[id].put.ts          ← PUT  /api/tasks/:id
+    tasks/[id].delete.ts       ← DELETE /api/tasks/:id
+  utils/db.ts                  ← инициализация SQLite, миграция, seed
+  utils/jwt.ts                 ← JWT sign / verify (HMAC-SHA256)
+  utils/auth.ts                ← извлечение пользователя из токена
 src/
   app.vue
   assets/css/main.css
@@ -49,19 +67,34 @@ src/
   middleware/auth.global.ts
   pages/index.vue
   pages/login.vue
-  plugins/01.msw.client.ts
-  plugins/02.axios.ts
-  mocks/
-    browser.ts
-    handlers/auth.handlers.ts
-    handlers/tasks.handlers.ts
-    data/*.ts
-    utils/auth.ts
+  plugins/axios.ts
   types/task.ts
-  public/mockServiceWorker.js
 ```
 
-Порядок плагинов: сначала MSW, затем Axios.
+## База данных
+
+SQLite-файл `data.db` создаётся автоматически в корне проекта. Схема:
+
+```sql
+CREATE TABLE users (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  email    TEXT NOT NULL UNIQUE,
+  password TEXT NOT NULL,
+  role     TEXT NOT NULL DEFAULT 'user'
+);
+
+CREATE TABLE tasks (
+  Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  Title       TEXT    NOT NULL,
+  Description TEXT    NOT NULL DEFAULT '',
+  DueDate     TEXT    NOT NULL,
+  IsCompleted INTEGER NOT NULL DEFAULT 0,
+  CreatedBy   INTEGER NOT NULL REFERENCES users(id),
+  CreatedAt   TEXT    NOT NULL
+);
+```
+
+Данные сохраняются между перезапусками сервера. Для сброса — удалить `data.db`.
 
 ## Тестовые пользователи
 
@@ -70,9 +103,11 @@ src/
 | admin@test.com | 123456 | admin |
 | user@test.com  | 123456 | user  |
 
-Токен (fake JWT): строка `String(user.id)` в `localStorage` под ключом `token` и в cookie `token` (для согласованного редиректа при SSR); объект пользователя — `user` (JSON).
+Seed-пользователи создаются автоматически при первом запуске (пустая таблица `users`).
 
-## API (моки MSW, префикс `/api`)
+Токен — настоящий JWT (HMAC-SHA256), содержит `{ id, email, role, iat, exp }`. Хранится в `localStorage` под ключом `token` и в cookie `token` (для согласованного редиректа при SSR); объект пользователя — `user` (JSON).
+
+## API (Nuxt Server Routes, префикс `/api`)
 
 Все защищённые маршруты: заголовок `Authorization: Bearer <token>`.
 
@@ -127,10 +162,6 @@ Query-параметры (опционально):
 
 Успех: `204` без тела. Ошибки: `400`, `401`, `403`, `404`.
 
-### Диагностика (только мок)
-
-`GET /api/_msw/test-500` — всегда ответ `500` (проверка обработки ошибки на клиенте при необходимости).
-
 ## Модель задачи
 
 | Поле         | Тип     |
@@ -143,7 +174,7 @@ Query-параметры (опционально):
 | CreatedBy   | number (id пользователя) |
 | CreatedAt   | string (ISO) |
 
-Правила: редактирование и удаление — только автор задачи или роль `admin` (на моках возвращается `403` при нарушении).
+Правила: редактирование и удаление — только автор задачи или роль `admin` (сервер возвращает `403` при нарушении).
 
 ## Скриншоты
 
